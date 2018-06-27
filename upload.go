@@ -35,7 +35,9 @@ func main() {
 
 	client.Navigate(getBaseUrl(*team))
 
-	for _, image := range findImages(*dir) {
+	images := findImages(*dir)
+	for i, image := range images {
+		log.Printf("[%d/%d] Uploading %s\n", i+1, len(images), image)
 		upload(client, image)
 	}
 }
