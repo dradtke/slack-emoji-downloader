@@ -33,7 +33,7 @@ func main() {
 	}
 
 	client := marionette_client.NewClient()
-	if err := client.Connect("localhost", 2828); err != nil {
+	if err := client.Connect("", 0); err != nil {
 		log.Fatal(err)
 	}
 	if _, err := client.NewSession("", nil); err != nil {
