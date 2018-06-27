@@ -47,10 +47,7 @@ func main() {
 		client.Navigate(fmt.Sprintf("%s?page=%d", baseUrl, page))
 		table, err := client.FindElement(marionette_client.ID, "custom_emoji")
 		if err != nil {
-			log.Fatal(err)
-		}
-		if table == nil {
-			break
+			log.Print("Done!")
 		}
 		findEmoji(table, *dir)
 	}
