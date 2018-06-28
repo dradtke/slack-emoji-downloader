@@ -65,11 +65,6 @@ func findImages(dir string) []string {
 	return images
 }
 
-func isImage(image string) bool {
-	mimeType := mime.TypeByExtension(filepath.Ext(image))
-	return strings.HasPrefix(mimeType, "image/")
-}
-
 func upload(client *marionette_client.Client, image string) {
 	for {
 		time.Sleep(500 * time.Millisecond)
