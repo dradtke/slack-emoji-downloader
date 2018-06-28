@@ -5,7 +5,9 @@ import (
 	"log"
 	"mime"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/njasm/marionette_client"
 )
@@ -15,6 +17,7 @@ func main() {
 	var (
 		team = flag.String("team", "", "Slack team to download emojis for")
 		dir  = flag.String("i", "", "Directory to import emoji from")
+		from = flag.Int("from", 1, "Index to start from")
 	)
 	flag.Parse()
 
@@ -37,6 +40,9 @@ func main() {
 
 	images := findImages(*dir)
 	for i, image := range images {
+		if i+1 < *from {
+			continue
+		}
 		log.Printf("[%d/%d] Uploading %s\n", i+1, len(images), image)
 		upload(client, image)
 	}
@@ -55,6 +61,7 @@ func findImages(dir string) []string {
 			images = append(images, file)
 		}
 	}
+	sort.Strings(images)
 	return images
 }
 
@@ -64,32 +71,50 @@ func isImage(image string) bool {
 }
 
 func upload(client *marionette_client.Client, image string) {
-	nameInput, err := client.FindElement(marionette_client.ID, "emojiname")
-	if err != nil {
-		log.Fatal(err)
-	}
-	name := filepath.Base(image)
-	name = name[:len(name)-len(filepath.Ext(name))]
-	nameInput.Clear()
-	if err := nameInput.SendKeys(name); err != nil {
-		log.Fatal(err)
-	}
+	for {
+		time.Sleep(500 * time.Millisecond)
+		nameInput, err := client.FindElement(marionette_client.ID, "emojiname")
+		if err != nil {
+			log.Printf("%s; refreshing and trying again", err)
+			if err = client.Refresh(); err != nil {
+				log.Fatal(err)
+			}
+			continue
+		}
 
-	uploadInput, err := client.FindElement(marionette_client.ID, "emojiimg")
-	if err != nil {
-		log.Fatal(err)
-	}
-	abs, err := filepath.Abs(image)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := uploadInput.SendKeys(abs); err != nil {
-		log.Fatal(err)
-	}
+		name := filepath.Base(image)
+		name = name[:len(name)-len(filepath.Ext(name))]
+		nameInput.Clear()
+		if err := nameInput.SendKeys(name); err != nil {
+			log.Printf("%s; refreshing and trying again", err)
+			if err = client.Refresh(); err != nil {
+				log.Fatal(err)
+			}
+			continue
+		}
 
-	submit, err := client.FindElement(marionette_client.ID, "addemoji_submit")
-	if err != nil {
-		log.Fatal(err)
+		uploadInput, err := client.FindElement(marionette_client.ID, "emojiimg")
+		if err != nil {
+			log.Printf("%s; refreshing and trying again", err)
+			if err = client.Refresh(); err != nil {
+				log.Fatal(err)
+			}
+			continue
+		}
+
+		abs, err := filepath.Abs(image)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := uploadInput.SendKeys(abs); err != nil {
+			log.Fatal(err)
+		}
+
+		submit, err := client.FindElement(marionette_client.ID, "addemoji_submit")
+		if err != nil {
+			log.Fatal(err)
+		}
+		submit.Click()
+		break
 	}
-	submit.Click()
 }
