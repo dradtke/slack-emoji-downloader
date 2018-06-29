@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/njasm/marionette_client"
+	marionette "github.com/njasm/marionette_client"
 )
 
 func main() {
@@ -32,11 +32,11 @@ func main() {
 		log.Fatal("must specify an output directory")
 	}
 
-	client := marionette_client.NewClient()
-	if err := client.Connect("", 0); err != nil {
+	mc := marionette.NewClient()
+	if err := mc.Connect("", 0); err != nil {
 		log.Fatal(err)
 	}
-	if _, err := client.NewSession("", nil); err != nil {
+	if _, err := mc.NewSession("", nil); err != nil {
 		log.Fatalf("failed to create new session: %s", err)
 	}
 
@@ -44,8 +44,8 @@ func main() {
 
 	for page := *from; true; page++ {
 		log.Printf("Loading page %d...", page)
-		client.Navigate(fmt.Sprintf("%s?page=%d", baseUrl, page))
-		table, err := client.FindElement(marionette_client.ID, "custom_emoji")
+		mc.Navigate(fmt.Sprintf("%s?page=%d", baseUrl, page))
+		table, err := mc.FindElement(marionette.ID, "custom_emoji")
 		if err != nil {
 			log.Print("Done!")
 		}
@@ -53,7 +53,7 @@ func main() {
 	}
 
 	/*
-		table, err := client.FindElement(marionette_client.ID, "custom_emoji")
+		table, err := mc.FindElement(marionette.ID, "custom_emoji")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -65,8 +65,8 @@ func getBaseUrl(team string) string {
 	return "https://" + team + ".slack.com/customize/emoji"
 }
 
-func findEmoji(table *marionette_client.WebElement, dir string) {
-	rows, err := table.FindElements(marionette_client.CLASS_NAME, "emoji_row")
+func findEmoji(table *marionette.WebElement, dir string) {
+	rows, err := table.FindElements(marionette.CLASS_NAME, "emoji_row")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -137,15 +137,15 @@ func save(filename, url string) {
 	}
 }
 
-func parseEmojiRow(row *marionette_client.WebElement) (name, url string) {
-	cols, err := row.FindElements(marionette_client.TAG_NAME, "td")
+func parseEmojiRow(row *marionette.WebElement) (name, url string) {
+	cols, err := row.FindElements(marionette.TAG_NAME, "td")
 	if err != nil {
 		log.Fatal(err)
 	}
 	for _, col := range cols {
 		switch col.Attribute("headers") {
 		case "custom_emoji_image":
-			wrapper, err := col.FindElement(marionette_client.CLASS_NAME, "emoji-wrapper")
+			wrapper, err := col.FindElement(marionette.CLASS_NAME, "emoji-wrapper")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -158,7 +158,7 @@ func parseEmojiRow(row *marionette_client.WebElement) (name, url string) {
 	return
 }
 
-func do(resp *marionette_client.Response, err error) string {
+func do(resp *marionette.Response, err error) string {
 	if err != nil {
 		log.Fatal(err)
 	}
