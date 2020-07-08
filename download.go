@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
+	"time"
 
 	marionette "github.com/njasm/marionette_client"
 )
@@ -21,7 +21,6 @@ func main() {
 	var (
 		team = flag.String("team", "", "Slack team to download emojis for")
 		dir  = flag.String("o", "", "Directory to save emoji in")
-		from = flag.Int("from", 1, "Page number to start from")
 	)
 	flag.Parse()
 
@@ -30,6 +29,9 @@ func main() {
 	}
 	if *dir == "" {
 		log.Fatal("must specify an output directory")
+	}
+	if err := os.Chdir(*dir); err != nil {
+		log.Fatalf("failed to cd to output directory: %s", err)
 	}
 
 	mc := marionette.NewClient()
@@ -40,32 +42,65 @@ func main() {
 		log.Fatalf("failed to create new session: %s", err)
 	}
 
-	baseUrl := getBaseUrl(*team)
+	mc.Navigate(getEmojiUrl(*team))
 
-	for page := *from; true; page++ {
-		log.Printf("Loading page %d...", page)
-		mc.Navigate(fmt.Sprintf("%s?page=%d", baseUrl, page))
-		table, err := mc.FindElement(marionette.ID, "custom_emoji")
-		if err != nil {
-			log.Print("Done!")
-		}
-		findEmoji(table, *dir)
+	table := waitForQaElement(mc, "customize_emoji_table", 10*time.Second)
+	navigableTable, err := table.FindElement(marionette.CLASS_NAME, "c-table_view_keyboard_navigable_container")
+	if err != nil {
+		log.Fatalf("failed to find navigable table: %s", err)
 	}
 
-	/*
-		table, err := mc.FindElement(marionette.ID, "custom_emoji")
-		if err != nil {
-			log.Fatal(err)
+	for {
+		downloadAvailable(navigableTable)
+		if err := navigableTable.SendKeys("\ue00f"); err != nil {
+			log.Fatalf("failed to send page down to table: %s", err)
 		}
-		findEmoji(table, *dir)
-	*/
+		time.Sleep(1 * time.Second)
+	}
 }
 
-func getBaseUrl(team string) string {
+func downloadAvailable(f marionette.Finder) {
+	for _, row := range findQaElements(f, "virtual-list-item") {
+		imgEl, err := row.FindElement(marionette.CLASS_NAME, "p-customize_emoji_list__image")
+		if err != nil {
+			log.Fatalf("failed to find image element: %s", err)
+		}
+		name, url := imgEl.Attribute("alt"), imgEl.Attribute("src")
+		fmt.Printf("downloading %s\n", name)
+		filename := name + filepath.Ext(url)
+		save(filename, url)
+	}
+}
+
+func waitForQaElement(f marionette.Finder, name string, timeout time.Duration) *marionette.WebElement {
+	condition := marionette.ElementIsPresent(marionette.CSS_SELECTOR, dataQaSelector(name))
+	ok, el, err := marionette.Wait(f).For(timeout).Until(condition)
+	if err != nil {
+		log.Fatalf("wait for %s failed: %s", name, err)
+	} else if !ok {
+		log.Fatal("wait for %s failed: not ok", name)
+	}
+	return el
+}
+
+func findQaElements(f marionette.Finder, name string) []*marionette.WebElement {
+	els, err := f.FindElements(marionette.CSS_SELECTOR, dataQaSelector(name))
+	if err != nil {
+		log.Fatalf("failed to find elements under %s: %s", name, err)
+	}
+	return els
+}
+
+func dataQaSelector(name string) string {
+	return fmt.Sprintf(`[data-qa="%s"]`, name)
+}
+
+func getEmojiUrl(team string) string {
 	return "https://" + team + ".slack.com/customize/emoji"
 }
 
-func findEmoji(table *marionette.WebElement, dir string) {
+/*
+func findEmoji(client, dir string) {
 	rows, err := table.FindElements(marionette.CLASS_NAME, "emoji_row")
 	if err != nil {
 		log.Fatal(err)
@@ -83,6 +118,7 @@ func findEmoji(table *marionette.WebElement, dir string) {
 	}
 	wg.Wait()
 }
+*/
 
 func save(filename, url string) {
 	if url == "" {

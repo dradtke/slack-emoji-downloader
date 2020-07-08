@@ -14,7 +14,6 @@ mode. When you do, the address bar should turn orange and you should see a robot
 to the connection status icon. Then run
 
 ```bash
-$ go get github.com/njasm/marionette_client
 $ go run download.go -team <team> -o <directory>
 ```
 
