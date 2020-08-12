@@ -1,202 +1,154 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+	"sync"
 
-	marionette "github.com/njasm/marionette_client"
+	"github.com/slack-go/slack"
 )
 
 func main() {
 	log.SetFlags(log.Lshortfile)
 	var (
-		team = flag.String("team", "", "Slack team to download emojis for")
-		dir  = flag.String("o", "", "Directory to save emoji in")
+		dir     = flag.String("output", "", "Directory to save emoji in")
+		token   = flag.String("token", "", "Slack API token")
+		workers = flag.Int("workers", 4, "number of workers")
 	)
 	flag.Parse()
 
-	if *team == "" {
-		log.Fatal("must specify a team")
-	}
 	if *dir == "" {
 		log.Fatal("must specify an output directory")
+	}
+	if *token == "" {
+		log.Fatal("must specify an API token")
+	}
+
+	if _, err := os.Stat(*dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(*dir, 0755); err != nil {
+			log.Fatalf("failed to create output directory: %s", err)
+		}
 	}
 	if err := os.Chdir(*dir); err != nil {
 		log.Fatalf("failed to cd to output directory: %s", err)
 	}
 
-	mc := marionette.NewClient()
-	if err := mc.Connect("", 0); err != nil {
-		log.Fatal(err)
-	}
-	if _, err := mc.NewSession("", nil); err != nil {
-		log.Fatalf("failed to create new session: %s", err)
-	}
+	retrieveEmoji(slack.New(*token), *workers)
+}
 
-	mc.Navigate(getEmojiUrl(*team))
+type emojiData struct {
+	name, url string
+}
 
-	table := waitForQaElement(mc, "customize_emoji_table", 10*time.Second)
-	navigableTable, err := table.FindElement(marionette.CLASS_NAME, "c-table_view_keyboard_navigable_container")
+func retrieveEmoji(s *slack.Client, workers int) {
+	log.Println("fetching emoji...")
+	emojis, err := s.GetEmoji()
 	if err != nil {
-		log.Fatalf("failed to find navigable table: %s", err)
+		log.Fatalf("failed to get emoji list: %s", err)
 	}
 
-	for {
-		downloadAvailable(navigableTable)
-		if err := navigableTable.SendKeys("\ue00f"); err != nil {
-			log.Fatalf("failed to send page down to table: %s", err)
-		}
-		time.Sleep(1 * time.Second)
-	}
-}
+	var (
+		input   = make(chan emojiData)
+		images  = sync.Map{}
+		aliases = sync.Map{}
+		wg      = sync.WaitGroup{}
+	)
 
-func downloadAvailable(f marionette.Finder) {
-	for _, row := range findQaElements(f, "virtual-list-item") {
-		imgEl, err := row.FindElement(marionette.CLASS_NAME, "p-customize_emoji_list__image")
-		if err != nil {
-			log.Fatalf("failed to find image element: %s", err)
-		}
-		name, url := imgEl.Attribute("alt"), imgEl.Attribute("src")
-		fmt.Printf("downloading %s\n", name)
-		filename := name + filepath.Ext(url)
-		save(filename, url)
-	}
-}
-
-func waitForQaElement(f marionette.Finder, name string, timeout time.Duration) *marionette.WebElement {
-	condition := marionette.ElementIsPresent(marionette.CSS_SELECTOR, dataQaSelector(name))
-	ok, el, err := marionette.Wait(f).For(timeout).Until(condition)
-	if err != nil {
-		log.Fatalf("wait for %s failed: %s", name, err)
-	} else if !ok {
-		log.Fatal("wait for %s failed: not ok", name)
-	}
-	return el
-}
-
-func findQaElements(f marionette.Finder, name string) []*marionette.WebElement {
-	els, err := f.FindElements(marionette.CSS_SELECTOR, dataQaSelector(name))
-	if err != nil {
-		log.Fatalf("failed to find elements under %s: %s", name, err)
-	}
-	return els
-}
-
-func dataQaSelector(name string) string {
-	return fmt.Sprintf(`[data-qa="%s"]`, name)
-}
-
-func getEmojiUrl(team string) string {
-	return "https://" + team + ".slack.com/customize/emoji"
-}
-
-/*
-func findEmoji(client, dir string) {
-	rows, err := table.FindElements(marionette.CLASS_NAME, "emoji_row")
-	if err != nil {
-		log.Fatal(err)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go worker(input, &images, &aliases, &wg)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(rows))
-	for _, row := range rows {
-		name, url := parseEmojiRow(row)
-		filename := filepath.Join(dir, name) + filepath.Ext(url)
-		go func(filename, url string) {
-			save(filename, url)
-			wg.Done()
-		}(filename, url)
+	i := 1
+	for name, url := range emojis {
+		log.Printf("[%d/%d] %s", i, len(emojis), name)
+		input <- emojiData{name: name, url: url}
+		i += 1
 	}
+
+	close(input)
 	wg.Wait()
+
+	log.Println("creating aliases...")
+	aliases.Range(func(key, value interface{}) bool {
+		original, ok := images.Load(value.(string))
+		if !ok {
+			log.Printf("cannot find existing emoji to alias: %s", value.(string))
+			return true
+		}
+		// log.Printf("aliasing %s -> %s", key.(string), original.(string))
+		createAlias(key.(string), original.(string))
+		return true
+	})
+
+	log.Println("done")
 }
-*/
 
-func save(filename, url string) {
-	if url == "" {
-		return
+func worker(input <-chan emojiData, images, aliases *sync.Map, wg *sync.WaitGroup) {
+	for def := range input {
+		if strings.HasPrefix(def.url, "alias:") {
+			log.Printf("found alias: %s -> %s", def.name, def.url[6:])
+			aliases.Store(def.name, def.url[6:])
+		} else {
+			filename := def.name + filepath.Ext(def.url)
+			images.Store(def.name, filename)
+			download(filename, def.url)
+		}
 	}
-	var src io.Reader
-	if strings.HasPrefix(url, "data:") {
-		semicolon := strings.Index(url, ";")
-		end := strings.Index(url, "base64,") + len("base64,")
+	log.Println("worker done")
+	wg.Done()
+}
 
-		format := url[len("data:"):semicolon]
-		data := url[end:]
-
-		formatParts := strings.Split(format, "/")
-		if len(formatParts) != 2 || formatParts[0] != "image" {
-			log.Fatal("invalid format: " + format)
-		}
-		filename += "." + formatParts[1]
-
-		b, err := base64.StdEncoding.DecodeString(data)
-		if err != nil {
-			log.Fatal(err)
-		}
-		src = bytes.NewReader(b)
-	} else {
-		// For HTTP urls, abort early if the file already exists.
-		if _, err := os.Stat(filename); !os.IsNotExist(err) {
-			log.Println("Found " + filename)
-			return
-		}
-		resp, err := http.Get(url)
-		if err != nil {
-			log.Fatal(err)
-		}
-		src = resp.Body
-		defer resp.Body.Close()
-	}
-
+func download(filename, url string) {
 	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to create file %s: %s", filename, err)
+		return
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			log.Fatal(err)
+			log.Printf("failed to close file %s: %s", filename, err)
 		}
-		log.Println("Saved " + filename)
 	}()
 
-	if _, err := io.Copy(f, src); err != nil {
-		log.Fatal(err)
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("failed to GET %s: %s", url, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		log.Printf("failed to write file %s: %s", filename, err)
 	}
 }
 
-func parseEmojiRow(row *marionette.WebElement) (name, url string) {
-	cols, err := row.FindElements(marionette.TAG_NAME, "td")
+func createAlias(alias, file string) {
+	destname := alias + filepath.Ext(file)
+	dest, err := os.Create(destname)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to create file %s: %s", destname, err)
+		return
 	}
-	for _, col := range cols {
-		switch col.Attribute("headers") {
-		case "custom_emoji_image":
-			wrapper, err := col.FindElement(marionette.CLASS_NAME, "emoji-wrapper")
-			if err != nil {
-				log.Fatal(err)
-			}
-			url = wrapper.Attribute("data-original")
-		case "custom_emoji_name":
-			name = col.Text()
-			name = name[1:strings.LastIndex(name, ":")]
+	defer func() {
+		if err := dest.Close(); err != nil {
+			log.Printf("failed to close file %s: %s", destname, err)
 		}
-	}
-	return
-}
+	}()
 
-func do(resp *marionette.Response, err error) string {
+	src, err := os.Open(file)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to open file %s: %s", file, err)
+		return
 	}
-	return resp.Value
+	defer src.Close()
+
+	if _, err := io.Copy(dest, src); err != nil {
+		log.Printf("failed to write file %s: %s", destname, err)
+	}
 }
